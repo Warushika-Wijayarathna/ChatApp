@@ -1,47 +1,51 @@
 package com.zenova;
 
 import java.io.*;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.util.ArrayList;
-import java.util.List;
+import java.net.*;
+import java.util.*;
+
 public class Server {
     private static final int PORT = 12345;
-    private static List<ClientHandler> clients = new ArrayList<>();
-    public static void main(String[] args) {
+    private static Set<Socket> clientSockets = Collections.synchronizedSet(new HashSet<>());
 
+    public static void main(String[] args) {
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
+            System.out.println("Server started on port " + PORT);
+
             while (true) {
                 Socket clientSocket = serverSocket.accept();
-                System.out.println("New client connected.");
-                ClientHandler clientHandler = new ClientHandler(clientSocket);
-                clients.add(clientHandler);
-                new Thread(clientHandler).start();
+                clientSockets.add(clientSocket);
+                new Thread(new ClientHandler(clientSocket)).start();
             }
         } catch (IOException e) {
-            System.out.println("Error: "+e.getMessage());
             e.printStackTrace();
         }
     }
 
-    static class ClientHandler implements Runnable {
+    private static class ClientHandler implements Runnable {
         private Socket socket;
         private DataInputStream in;
         private DataOutputStream out;
+
         public ClientHandler(Socket socket) {
             this.socket = socket;
-        }
-        @Override
-        public void run() {
             try {
                 in = new DataInputStream(socket.getInputStream());
                 out = new DataOutputStream(socket.getOutputStream());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        @Override
+        public void run() {
+            try {
                 while (true) {
                     String messageType = in.readUTF();
                     if (messageType.equals("TEXT")) {
                         String message = in.readUTF();
-                        System.out.println(message);
-                        broadcastMessage("TEXT", message);} else if (messageType.equals("IMAGE")) {
+                        broadcastMessage("TEXT", message);
+                    } else if (messageType.equals("IMAGE")) {
                         int length = in.readInt();
                         byte[] imageBytes = new byte[length];
                         in.readFully(imageBytes);
@@ -49,31 +53,42 @@ public class Server {
                     }
                 }
             } catch (IOException e) {
-                System.out.println("Client disconnected.");
-                clients.remove(this);
-            }
-        }
-        private void broadcastMessage(String type, String message) {
-            System.out.println("Broadcasting message: " + type + " " + message);
-            for (ClientHandler client : clients) {
+                e.printStackTrace();
+            } finally {
                 try {
-                    client.out.writeUTF(type);
-                    client.out.writeUTF(message);
+                    socket.close();
+                    clientSockets.remove(socket);
                 } catch (IOException e) {
-                    System.out.println("Error: "+e.getMessage());
                     e.printStackTrace();
                 }
             }
         }
 
+        private void broadcastMessage(String type, String message) {
+            synchronized (clientSockets) {
+                for (Socket clientSocket : clientSockets) {
+                    try {
+                        DataOutputStream clientOut = new DataOutputStream(clientSocket.getOutputStream());
+                        clientOut.writeUTF(type);
+                        clientOut.writeUTF(message);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        }
+
         private void broadcastImage(byte[] imageBytes) {
-            for (ClientHandler client : clients) {
-                try {
-                    client.out.writeUTF("IMAGE");
-                    client.out.writeInt(imageBytes.length);
-                    client.out.write(imageBytes);
-                } catch (IOException e) {
-                    e.printStackTrace();
+            synchronized (clientSockets) {
+                for (Socket clientSocket : clientSockets) {
+                    try {
+                        DataOutputStream clientOut = new DataOutputStream(clientSocket.getOutputStream());
+                        clientOut.writeUTF("IMAGE");
+                        clientOut.writeInt(imageBytes.length);
+                        clientOut.write(imageBytes);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
                 }
             }
         }
